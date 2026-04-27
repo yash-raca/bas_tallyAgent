@@ -1,0 +1,17 @@
+{
+  "database": {
+    "technology": "api",
+    "endpoint": "http://localhost:4000/api/tally/sync",
+    "clientToken": "YOUR_MSME_JWT_TOKEN",
+    "targetClientId": "CID0001"
+  },
+  "tally": {
+     "definition": "tally-export-config.yaml",
+     "server": "localhost",
+     "port": 9000,
+     "sync": "full",
+     "batchsize": 5000,
+     "frequency": 0,
+     "company": ""
+  }
+}
