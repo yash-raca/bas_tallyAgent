@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import { database } from './database'; 
 import { tally } from './tally';
 import { outstandingsExporter } from './outstandings';
-import { XMLParser } from 'fast-xml-parser'; // Imported for the fast test
+import { XMLParser } from 'fast-xml-parser'; 
 
 dotenv.config();
 const app = express();
@@ -46,34 +46,46 @@ const parseTallyDate = (dateStr: string) => {
     );
 };
 
-// ✨ FIX: ADDED MISSING HELPER - Generates monthly chunks between two dates
-const generateSyncPeriods = (start: Date, end: Date) => {
-    const periods = [];
-    let currentStart = new Date(start.getTime());
+// ✨ HELPER: Automatically generates Yearly, Quarterly, and Monthly chunks 
+// for the selected date range so all period gaps are exported automatically.
+const generateAllSyncPeriods = (start: Date, end: Date) => {
+    const periods: { type: string; from: Date; to: Date }[] = [];
 
-    while (currentStart <= end) {
-        // Get the last day of the current month
-        let currentEnd = new Date(currentStart.getFullYear(), currentStart.getMonth() + 1, 0);
+    const createChunks = (monthStep: number, typeLabel: string) => {
+        let currentStart = new Date(start.getTime());
+        
+        while (currentStart <= end) {
+            // Move ahead by monthStep, '0' gets the last day of that target month
+            let currentEnd = new Date(
+                currentStart.getFullYear(),
+                currentStart.getMonth() + monthStep,
+                0 
+            );
 
-        // If the calculated end of the month exceeds the overall end date, cap it
-        if (currentEnd > end) {
-            currentEnd = new Date(end.getTime());
+            // Cap it to the final end date if it overshoots
+            if (currentEnd > end) {
+                currentEnd = new Date(end.getTime());
+            }
+
+            periods.push({
+                type: typeLabel,
+                from: new Date(currentStart.getTime()),
+                to: new Date(currentEnd.getTime())
+            });
+
+            // Move start to the 1st of the next chunk
+            currentStart = new Date(
+                currentStart.getFullYear(),
+                currentStart.getMonth() + monthStep,
+                1
+            );
         }
+    };
 
-        periods.push({
-            type: 'Monthly',
-            from: new Date(currentStart.getTime()),
-            to: new Date(currentEnd.getTime())
-        });
-
-        // Move to the first day of the next month
-        currentStart = new Date(currentStart.getFullYear(), currentStart.getMonth() + 1, 1);
-    }
-
-    // Safety fallback
-    if (periods.length === 0) {
-        periods.push({ type: 'Range', from: start, to: end });
-    }
+    // Automatically slice the date range into all required granularities:
+    createChunks(12, 'Yearly');
+    createChunks(3, 'Quarterly');
+    createChunks(1, 'Monthly');
 
     return periods;
 };
@@ -89,6 +101,9 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
     if (!authHeader || authHeader !== `Bearer ${expectedToken}`) return res.status(401).json({ error: "Unauthorized." });
 
     const { clientId, companyName, fromDate, toDate } = req.body;
+    
+    // Kept as a fallback for outstandingsExporter if it still requires it
+    const syncIntervalRaw = req.body.syncInterval || req.body.syncinterval || req.body.interval || 'Monthly';
 
     if (!companyName) return res.status(400).json({ error: "Missing companyName in request body." });
     if (isSyncing) return res.status(409).json({ error: "A sync is already in progress. Please wait." });
@@ -108,13 +123,14 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
         await database.openConnectionPool();
         database.setTargetCompany(companyName);
 
-        // =========================================================
-        // 🛑 COMMENTED OUT: PHASE 1 (Vouchers & Masters)
-        // =========================================================
-        
-        const phase1StartTime = Date.now();
+        // Define Master Dates for the overall process
         const startD = fromDate !== 'auto' ? parseTallyDate(fromDate) : new Date(new Date().getFullYear(), 3, 1);
         const endD = toDate !== 'auto' ? parseTallyDate(toDate) : new Date();
+
+        // =========================================================
+        // 🚀 PHASE 1: Vouchers & Masters
+        // =========================================================
+        const phase1StartTime = Date.now();
         const masterFrom = formatTallyDate(startD);
         const masterTo = formatTallyDate(endD);
 
@@ -138,20 +154,18 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
         
         const phase1Duration = Date.now() - phase1StartTime;
         console.log(`✅ PHASE 1 Complete in ${formatDuration(phase1Duration)}: All foundational data saved.`);
-        
-       console.log("⏭️ SKIPPING PHASE 1 (Commented out for fast testing)");
 
         // =========================================================
-        // 🛑 COMMENTED OUT: PHASE 2 (Fast-Report Chunking)
+        // 🚀 PHASE 2: Fast-Report Chunking (Auto-Chunking)
         // =========================================================
-        
         const phase2StartTime = Date.now();
         console.log(`\n=========================================`);
         console.log(`🚀 STARTING PHASE 2: FAST REPORT EXTRACTION`);
         console.log(`=========================================\n`);
 
-        const periodsToSync = generateSyncPeriods(startD, endD);
-
+        // Use the new automated chunk generator to get Yearly, Quarterly, and Monthly data
+        const periodsToSync = generateAllSyncPeriods(startD, endD);
+        
         for (const period of periodsToSync) {
             const chunkFrom = formatTallyDate(period.from);
             const chunkTo = formatTallyDate(period.to);
@@ -173,18 +187,15 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
 
             database.setSyncPeriod(chunkFrom, chunkTo);
             await tally.importData();
-            console.log(`✅ ${period.type} Report Chunk Sent to Cloud.`);
+            console.log(`✅ ${period.type} Report Chunk Sent to Cloud. (${chunkFrom} - ${chunkTo})`);
         }
         
         const phase2Duration = Date.now() - phase2StartTime;
         console.log(`✅ PHASE 2 Complete in ${formatDuration(phase2Duration)}.`);
-        
-       console.log("⏭️ SKIPPING PHASE 2 (Commented out for fast testing)");
 
         // =========================================================
-        // 🛑 COMMENTED OUT: PHASE 3 (Old Drill-Down Outstandings)
+        // 🚀 PHASE 3: Deep Drill-Down Outstandings
         // =========================================================
-        
         const phase3StartTime = Date.now();
         console.log(`\n=========================================`);
         console.log(`🚀 STARTING PHASE 3: DEEP DRILL-DOWN (JSON EXPORTS)`);
@@ -196,14 +207,13 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
         tally.config.company = companyName;
         tally.config.server = process.env.TALLY_SERVER || 'localhost';
         tally.config.port = parseInt(process.env.TALLY_PORT || '9000');
+        tally.config.fromdate = formatTallyDate(startD);
+        tally.config.todate = formatTallyDate(endD);
         
-        await outstandingsExporter.sync(); 
+        await outstandingsExporter.sync(syncIntervalRaw); 
         
         const phase3Duration = Date.now() - phase3StartTime;
         console.log(`✅ PHASE 3 Complete in ${formatDuration(phase3Duration)}: All Drill-Downs saved to Cloud.`);
-        
-       console.log("⏭️ SKIPPING PHASE 3 (Commented out for fast testing)");
-
 
         // =========================================================
         // 🚀 FAST TEST: EXACT BILL-BY-BILL SYNC ONLY
@@ -250,7 +260,6 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
                             reportData: JSON.stringify(jsonObj)
                         }];
 
-                        // Save using your existing architecture!
                         await database.bulkLoadTableJson({ name: report.tableName }, payload);
                         console.log(`  ✅ Successfully saved ${report.dbName} to the database!`);
                     }
@@ -261,7 +270,6 @@ app.post('/full-sync', async (req: Request, res: Response): Promise<any> => {
                 console.error(`  ❌ Error fetching ${report.dbName}:`, e.message);
             }
         }
-
 
         // Wrap up
         const totalSyncDuration = Date.now() - totalSyncStartTime; 
@@ -295,3 +303,4 @@ app.listen(PORT, () => {
     console.log(`\n🛡️  Secure Single-Company Tally Agent is Online.`);
     console.log(`📡 Listening on: http://localhost:${PORT}/full-sync\n`);
 });
+    

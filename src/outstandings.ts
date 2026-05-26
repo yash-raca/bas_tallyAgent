@@ -31,7 +31,7 @@ class OutstandingsExporter {
         });
     }
 
-    // ✨ UPDATED: Now accepts optional custom dates to support monthly looping
+    // ✨ Accepts optional custom dates to support dynamic chunking
     private generateTallyXML(reportName: string, extraVars: string, customFrom?: string, customTo?: string): string {
         const fromStr = customFrom || tally.config.fromdate;
         const toStr = customTo || tally.config.todate;
@@ -60,8 +60,9 @@ class OutstandingsExporter {
         </ENVELOPE>`;
     }
 
-    public async sync(): Promise<void> {
-        logger.logMessage("\n🚀 Starting Month-Wise Deep Outstandings Extraction...");
+    // ✨ ADDED 'interval' parameter to support Quarterly/Half-Yearly
+    public async sync(interval: string = 'Monthly'): Promise<void> {
+        logger.logMessage(`\n🚀 Starting ${interval} Deep Outstandings Extraction...`);
         const groupsToSync = ["Sundry Debtors", "Sundry Creditors"];
         const parser = new XMLParser({ ignoreAttributes: false, textNodeName: "_text" });
 
@@ -74,7 +75,13 @@ class OutstandingsExporter {
             maxBodyLength: Infinity
         };
 
-        // 1. Prepare Monthly Chunks for the selected period
+        // ✨ 1. Check interval to determine how many months to jump
+        const safeInterval = interval.replace(/[^a-zA-Z]/g, '').toLowerCase();
+        let monthStep = 1;
+        if (safeInterval.includes('quarter') || safeInterval.includes('quater') || safeInterval.startsWith('q')) monthStep = 3;
+        else if (safeInterval.includes('half') || safeInterval.startsWith('h')) monthStep = 6;
+        else if (safeInterval.includes('year') || safeInterval === 'y') monthStep = 12;
+
         const startD = utility.Date.parse(tally.config.fromdate, 'yyyyMMdd') || new Date();
         const endD = utility.Date.parse(tally.config.todate, 'yyyyMMdd') || new Date();
         const monthsToSync: { from: string, to: string, name: string }[] = [];
@@ -84,20 +91,27 @@ class OutstandingsExporter {
             const y = curr.getFullYear();
             const m = curr.getMonth();
             const mStart = new Date(y, m, 1);
-            const mEnd = new Date(y, m + 1, 0);
             
-            // Constrain to user selection
+            // ✨ Jump forward by 3 or 6 months based on user preference!
+            const mEnd = new Date(y, m + monthStep, 0); 
+            
             const actualStart = mStart < startD ? startD : mStart;
             const actualEnd = mEnd > endD ? endD : mEnd;
 
-            const monthsList = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const monthsList = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
             
+            // Chunk Name logic (e.g. "Apr 2025 to Jun 2025")
+            let chunkName = `${monthsList[actualStart.getMonth()]} ${actualStart.getFullYear()}`;
+            if (monthStep > 1) {
+                chunkName += ` to ${monthsList[actualEnd.getMonth()]} ${actualEnd.getFullYear()}`;
+            }
+
             monthsToSync.push({
                 from: `${actualStart.getFullYear()}${String(actualStart.getMonth() + 1).padStart(2, '0')}${String(actualStart.getDate()).padStart(2, '0')}`,
                 to: `${actualEnd.getFullYear()}${String(actualEnd.getMonth() + 1).padStart(2, '0')}${String(actualEnd.getDate()).padStart(2, '0')}`,
-                name: `${monthsList[m]} ${y}`
+                name: chunkName
             });
-            curr.setMonth(curr.getMonth() + 1);
+            curr.setMonth(curr.getMonth() + monthStep); // ✨ Move to next chunk
         }
 
         for (const groupName of groupsToSync) {
@@ -137,7 +151,7 @@ class OutstandingsExporter {
             scanForLedgers(level1Data?.ENVELOPE || level1Data);
 
             const ledgerArray = Array.from(targetLedgers);
-            logger.logMessage(`🔍 Found ${ledgerArray.length} ledgers. Starting Monthly Drill-Down...`);
+            logger.logMessage(`🔍 Found ${ledgerArray.length} ledgers. Starting Drill-Down...`);
 
             for (const ledgerName of ledgerArray) {
                 try {
@@ -152,7 +166,7 @@ class OutstandingsExporter {
                         payload: { ledgerName, reportData: parser.parse(summaryRaw) }
                     }, axiosConfig);
 
-                    // B. ✨ SYNC VOUCHERS MONTH-BY-MONTH
+                    // B. SYNC VOUCHERS CHUNK-BY-CHUNK
                     for (const mChunk of monthsToSync) {
                         const vchXml = this.generateTallyXML("Ledger Vouchers", `<LEDGERNAME>${safeLedgerName}</LEDGERNAME>`, mChunk.from, mChunk.to);
                         const vchRaw = await this.postTallyXML(vchXml);
@@ -162,19 +176,19 @@ class OutstandingsExporter {
                             tableName: 'tally_ledger_voucher_export',
                             payload: { 
                                 ledgerName, 
-                                month: mChunk.name, // Saved as "April 2025", "May 2025", etc.
+                                month: mChunk.name, // Saved as "Apr 2025 to Jun 2025"
                                 reportData: parser.parse(vchRaw) 
                             }
                         }, axiosConfig);
                     }
-                    logger.logMessage(`   ✅ Synced: ${ledgerName} (${monthsToSync.length} months)`);
+                    logger.logMessage(`   ✅ Synced: ${ledgerName} (${monthsToSync.length} chunks)`);
 
                 } catch (err: any) {
                     logger.logError(`   ❌ Failed: ${ledgerName}`, err.message);
                 }
             }
         }
-        logger.logMessage("✅ All Data Synced Month-Wise!");
+        logger.logMessage("✅ All Data Synced Chunk-Wise!");
     }
 }
 

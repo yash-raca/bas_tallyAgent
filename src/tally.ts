@@ -213,6 +213,15 @@ class _tally {
             try {
 
                 logger.logMessage('Tally to Database | version: 1.0.42');
+                if (this.config.sync === 'reports') {
+                    this.importMaster = false;
+                    this.importTransaction = false;
+                } else {
+                    this.importMaster = true;
+                    this.importTransaction = true;
+                }
+
+                
 
                 let pathTallyExportDefinition = this.config.definition
                 if (pathTallyExportDefinition.endsWith('.yaml')) {
