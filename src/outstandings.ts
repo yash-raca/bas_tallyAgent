@@ -167,20 +167,33 @@ class OutstandingsExporter {
                     }, axiosConfig);
 
                     // B. SYNC VOUCHERS CHUNK-BY-CHUNK
-                    for (const mChunk of monthsToSync) {
-                        const vchXml = this.generateTallyXML("Ledger Vouchers", `<LEDGERNAME>${safeLedgerName}</LEDGERNAME>`, mChunk.from, mChunk.to);
-                        const vchRaw = await this.postTallyXML(vchXml);
-                        
-                        await axios.post(syncUrl, {
-                            companyName: tally.config.company,
-                            tableName: 'tally_ledger_voucher_export',
-                            payload: { 
-                                ledgerName, 
-                                month: mChunk.name, // Saved as "Apr 2025 to Jun 2025"
-                                reportData: parser.parse(vchRaw) 
-                            }
-                        }, axiosConfig);
-                    }
+                   // outstandings.ts
+for (const mChunk of monthsToSync) {
+  const vchXml = this.generateTallyXML(
+    "Ledger Vouchers",
+    `
+      <LEDGERNAME>${safeLedgerName}</LEDGERNAME>
+      <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      <EXPLODEALLLEVELS>Yes</EXPLODEALLLEVELS>
+      <ISITEMIZE>Yes</ISITEMIZE>
+      <ISBILLWISEON>Yes</ISBILLWISEON>
+    `,
+    mChunk.from,
+    mChunk.to
+  );
+
+  const vchRaw = await this.postTallyXML(vchXml);
+
+  await axios.post(syncUrl, {
+    companyName: tally.config.company,
+    tableName: "tallyledgervoucherexport",
+    payload: {
+      ledgerName,
+      month: mChunk.name,
+      reportData: parser.parse(vchRaw)
+    }
+  }, axiosConfig);
+}
                     logger.logMessage(`   ✅ Synced: ${ledgerName} (${monthsToSync.length} chunks)`);
 
                 } catch (err: any) {

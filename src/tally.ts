@@ -253,8 +253,35 @@ class _tally {
                 }
 
                 await database.openConnectionPool();
+                // ==========================================
+                // ✨ MAGIC INTERCEPTOR TO FORCE CANCELLED VOUCHERS
+                // ==========================================
+                if (this.isDefinitionYAML) {
+                    let vTab = this.lstTableTransactionYaml?.find(p => p.name === 'trn_voucher');
+                    if (vTab) {
+                        // Strip filter that removes cancelled vouchers from YAML
+                        if (vTab.filters) vTab.filters = vTab.filters.filter(f => !f.toLowerCase().includes('iscancelled'));
+                        // Add IsCancelled field to CSV export if missing
+                        if (!vTab.fields.find(f => f.name === 'is_cancelled')) vTab.fields.push({ name: 'is_cancelled', field: 'IsCancelled', type: 'logical' });
+                    }
+                } else {
+                    // Force JSON fetch list to include IsCancelled
+                    let vCol = this.lstTallyCollectionDefinitionJson?.find(p => p.collection === 'voucher');
+                    if (vCol) {
+                        if (!vCol.fetch) vCol.fetch = [];
+                        if (!vCol.fetch.includes('IsCancelled')) vCol.fetch.push('IsCancelled');
+                    }
+                    // Map IsCancelled to backend payload
+                    let vTab = this.lstDatabaseTableDefinitionJson?.find(p => p.name === 'trn_voucher' || p.name === 'voucher');
+                    if (vTab) {
+                        if (!vTab.fields.find(f => f.name === 'is_cancelled')) vTab.fields.push({ name: 'is_cancelled', datatype: 'boolean', source: 'iscancelled' });
+                    }
+                }
+                // ==========================================
 
-                if (this.config.sync == 'incremental') {
+                await database.openConnectionPool(); // <-- This is the existing line
+
+                if (this.config.sync == 'incremental') {    
 
                     if (this.isDefinitionYAML == false) {
                         logger.logMessage('Incremental Sync is supported only for YAML based definition');
@@ -638,14 +665,20 @@ class _tally {
 
                                 let lstVoucherCollectionData: any[] = [];
 
-                                const processVoucherCollectionDateRange = async (periodStartDate: Date, periodEndDate: Date, batchCtr: number = 0) => {
-                                    let timestampBegin = Date.now();
-                                    let targetCollection = this.lstTallyCollectionDefinitionJson.filter(p => p.collection == 'voucher')[0];
-                                    targetCollection.filters?.push({
-                                        name: 'fltrPeriod',
-                                        expression: `$Date &gt;= $$Date:"${utility.Date.format(periodStartDate, 'yyyyMMdd')}" and $Date &lt;= $$Date:"${utility.Date.format(periodEndDate, 'yyyyMMdd')}"`
-                                    });
-                                    let reqXmlPayload = this.generateCollectionRequestXMLPayload(targetCollection);
+const processVoucherCollectionDateRange = async (periodStartDate: Date, periodEndDate: Date, batchCtr: number = 0) => {
+    let timestampBegin = Date.now();
+    let targetCollection = this.lstTallyCollectionDefinitionJson.filter(p => p.collection == 'voucher')[0];
+    
+    // 👇 ADD THESE TWO LINES TO RESET FILTERS
+    targetCollection.filters = targetCollection.filters?.filter(f => f.name !== 'fltrPeriod') || [];
+    targetCollection.filters = targetCollection.filters?.filter(f => f.name !== 'IsNonOptionalCancelledVchs') || [];
+
+    // Leave the rest exactly as it is...
+    targetCollection.filters.push({
+        name: 'fltrPeriod',
+        expression: `$Date &gt;= $$Date:"${utility.Date.format(periodStartDate, 'yyyyMMdd')}" and $Date &lt;= $$Date:"${utility.Date.format(periodEndDate, 'yyyyMMdd')}"`
+    });
+    let reqXmlPayload = this.generateCollectionRequestXMLPayload(targetCollection);
                                     await this.saveTallyXMLResponse(reqXmlPayload, `./csv/${targetCollection.collection}.xml`);
                                     let timestampEnd = Date.now();
                                     let elapsedSecond = utility.Number.round((timestampEnd - timestampBegin) / 1000, 3);
@@ -1592,16 +1625,15 @@ class _tally {
         return new Promise<[Date, number][]>(async (resolve, reject) => {
             try {
                 let retval: [Date, number][] = [];
-                let objTallyCollectionConfig: collectionConfigJSON = {
-                    collection: 'voucher',
-                    filters: [
-                        {
-                            name: 'IsNonOptionalCancelledVchs'
-                        }
-                    ],
-                    by: ['Date : $Date'],
-                    aggrcompute: ['Count : SUM : $$Number:1']
-                }
+                // Replace this block in generateVoucherDatewiseCount:
+// Replace this part inside generateVoucherDatewiseCount:
+let objTallyCollectionConfig: collectionConfigJSON = {
+    collection: 'voucher',
+    // 👇 CHANGE THIS: Remove the 'IsNonOptionalCancelledVchs' object completely
+    filters: [], 
+    by: ['Date : $Date'],
+    aggrcompute: ['Count : SUM : $$Number:1']
+}
                 let xmlPayload = this.generateCollectionRequestXMLPayload(objTallyCollectionConfig);
                 let xmlContent = await this.postTallyXML(xmlPayload);
                 let collectionData = await this.parseXmlToJsonCollection('object', xmlContent);
